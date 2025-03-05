@@ -6,6 +6,8 @@
 const char* ssid = "PVS420";  // Open Wi-Fi network
 const IPAddress local_IP(10, 4, 20, 1);
 const IPAddress subnet(255, 255, 255, 0);
+String logBuffer = ""; // Non-persistent log storage
+
 
 WebServer server(80);
 WiFiServer telnetServer(23);
@@ -17,75 +19,91 @@ WiFiClient telnetClient;
 // ✅ **Function Prototypes (Declare Before setup())**
 void handleRoot();
 void handleOTAUpdate();
+void handleLogs() {
+    server.send(200, "text/plain", logBuffer);
+}
+
 
 // View Mode and Zoom Commands
-const uint8_t white_hot[23]       = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x6D};
-const uint8_t black_hot[23]       = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x69, 0x6F};
-const uint8_t low_temp_highlight[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC5, 0x65};
-const uint8_t low_contrast[23]    = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2F, 0x63};
-const uint8_t high_contrast[23]   = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x68};
-const uint8_t highlight[23]       = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6B};
-const uint8_t outline_mode[23]    = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x7D};
-const uint8_t general_mode[23]    = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x60};
+struct Mode {
+    const char* name;
+    const uint8_t command[23];
+};
 
-const uint8_t zoom_1x[23]         = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x0A};
-const uint8_t zoom_2x[23]         = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41, 0x0C};
-const uint8_t zoom_3x[23]         = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0x0E};
-const uint8_t zoom_4x[23]         = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCF, 0x00};
+struct Zoom {
+    const char* name;
+    const uint8_t command[23];
+};
 
+// Modes
+const Mode modes[] = {
+    {"White Hot", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x6D}},
+    {"Black Hot", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x69, 0x6F}},
+    {"Low Temp Highlight", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC5, 0x65}},
+    {"Low Contrast", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2F, 0x63}},
+    {"High Contrast", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x68}},
+    {"Highlight", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6B}},
+    {"Outline Mode", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x7D}},
+    {"General Mode", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x60}}
+};
 
-const uint8_t* const modes[] PROGMEM = {white_hot, black_hot, low_temp_highlight};
-const uint8_t* const zoomLevels[] PROGMEM = {zoom_1x, zoom_2x};
+// Zoom Levels
+const Zoom zoomLevels[] = {
+    {"1x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x0A}},
+    {"2x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41, 0x0C}},
+    {"3x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0x0E}},
+    {"4x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCF, 0x00}}
+};
 const int modeCount = sizeof(modes) / sizeof(modes[0]);
 const int zoomCount = sizeof(zoomLevels) / sizeof(zoomLevels[0]);
 int currentMode = 0;
 int currentZoom = 0;
 
 void sendCommand(const uint8_t* command) {
-    uint8_t buffer[23];
-    memcpy_P(buffer, command, 23);  // Copy from PROGMEM
-
-    // Print to Serial Monitor
-    Serial.println("Sending Command:");
+    logBuffer += "Sending Command: ";
     for (int i = 0; i < 23; i++) {
-        Serial.printf("%02X ", buffer[i]);  // Print as HEX
+        logBuffer += String(command[i], HEX) + " ";
     }
-    Serial.println();
+    logBuffer += "\n";
 
-    // Print to Telnet Client (if connected)
+    // Keep log size manageable
+    if (logBuffer.length() > 1000) {  // Trim if log gets too long
+        logBuffer = logBuffer.substring(logBuffer.length() - 1000);
+    }
+
+    Serial1.write(command, 23);
+
+    // Send to Telnet Client (if connected)
     if (telnetClient && telnetClient.connected()) {
-        telnetClient.println("Sending Command:");
+        telnetClient.print("Sent Command: ");
         for (int i = 0; i < 23; i++) {
-            telnetClient.printf("%02X ", buffer[i]);  // Print as HEX
+            telnetClient.printf("%02X ", command[i]);
         }
         telnetClient.println();
     }
-
-    // Send command via Serial1
-    Serial1.write(buffer, 23);
 }
-
-
+void handleModeChange() {
+    if (server.hasArg("mode")) {
+        int modeIndex = server.arg("mode").toInt();
+        if (modeIndex >= 0 && modeIndex < modeCount) {
+            currentMode = modeIndex;
+            sendCommand(modes[currentMode].command);
+            server.send(200, "text/plain", "Mode changed to: " + String(modes[currentMode].name));
+        } else {
+            server.send(400, "text/plain", "Invalid mode index");
+        }
+    }
+}
 
 void handleZoomChange() {
     if (server.hasArg("zoom")) {
         int zoomIndex = server.arg("zoom").toInt();
         if (zoomIndex >= 0 && zoomIndex < zoomCount) {
             currentZoom = zoomIndex;
-            sendCommand(zoomLevels[currentZoom]);
-            server.send(200, "text/plain", "Zoom changed");
-            Serial.printf("Zoom changed to %d\n", currentZoom);
-        }
-    }
-}
-
-void handleModeChange() {
-    if (server.hasArg("mode")) {
-        int modeIndex = server.arg("mode").toInt();
-        if (modeIndex >= 0 && modeIndex < modeCount) {
-            currentMode = modeIndex;
-            sendCommand(modes[currentMode]);
-            server.send(200, "text/plain", "Mode changed");
+            sendCommand(zoomLevels[currentZoom].command);
+            server.send(200, "text/plain", "Zoom changed to: " + String(zoomLevels[currentZoom].name));
+        } else {
+            server.send(400, "text/plain", "Invalid zoom index");
         }
     }
 }
@@ -103,13 +121,15 @@ void setup() {
       Serial.println("Wi-Fi started successfully");
     }
     WiFi.softAPConfig(local_IP, local_IP, subnet);
-    server.on("/mode", handleModeChange);
-    server.on("/zoom", handleZoomChange);
     server.begin();
     
     // ✅ Now functions are properly declared
     server.on("/", HTTP_GET, handleRoot);
+    server.on("/mode", handleModeChange);
+    server.on("/zoom", handleZoomChange);
+    server.on("/save", handleSaveSettings);
     server.on("/update", HTTP_GET, handleOTAUpdate);
+    server.on("/logs", handleLogs);
     server.begin();
         Serial.println("Wi-Fi SoftAP Enabled!");
 
@@ -135,9 +155,47 @@ void setup() {
     telnetServer.begin();
     Serial.println("Telnet Server Started - Use `telnet 192.168.4.1` to connect.");
 
-
+}
+void handleOTAUpdate() {
+    server.send(200, "text/html", "<h2>Ready for OTA Update!</h2>");
+    Serial.println("Ready for OTA Update!");
 }
 
+void handleSaveSettings() {
+    server.send(200, "text/plain", "Settings saved: Mode - " + String(modes[currentMode].name) + ", Zoom - " + String(zoomLevels[currentZoom].name));
+}
+
+void handleRoot() {
+    String page = "<h2>PVS420 Web Server</h2>";
+    
+    page += "<h3>Zoom Controls</h3>";
+    page += "<select id='zoomSelect' onchange='changeZoom()'>";
+    for (int i = 0; i < zoomCount; i++) {
+        page += "<option value='" + String(i) + "'>" + String(zoomLevels[i].name) + "</option>";
+    }
+    page += "</select>";
+    
+    page += "<h3>View Mode Controls</h3>";
+    page += "<select id='modeSelect' onchange='changeMode()'>";
+    for (int i = 0; i < modeCount; i++) {
+        page += "<option value='" + String(i) + "'>" + String(modes[i].name) + "</option>";
+    }
+    page += "</select>";
+    
+    page += "<script>";
+    page += "function changeZoom() {";
+    page += "var zoom = document.getElementById('zoomSelect').value;";
+    page += "fetch('/zoom?zoom=' + zoom);";
+    page += "}";
+    page += "function changeMode() {";
+    page += "var mode = document.getElementById('modeSelect').value;";
+    page += "fetch('/mode?mode=' + mode);";
+    page += "}";
+    page += "</script>";
+    page += "<p><a href='/logs'><button>View Logs</button></a></p>";
+    
+    server.send(200, "text/html", page);
+}
 
 void loop() {
     server.handleClient();
@@ -163,32 +221,4 @@ void loop() {
 
     Serial.println("Loop running...");
     delay(1000);
-}
-
-// ✅ Function Definitions (Now After setup())
-void handleRoot() {
-    String page = "<h2>ESP32-C6 Web Server</h2>";
-    
-    // OTA Update Button
-    page += "<p><a href='/update'><button>Start OTA Update</button></a></p>";
-
-    // Zoom Buttons
-    page += "<h3>Zoom Controls</h3>";
-    for (int i = 0; i < zoomCount; i++) {
-        page += "<p><a href='/zoom?zoom=" + String(i) + "'><button>Zoom " + String(i+1) + "x</button></a></p>";
-    }
-
-    // Mode Buttons
-    page += "<h3>View Mode Controls</h3>";
-    for (int i = 0; i < modeCount; i++) {
-        page += "<p><a href='/mode?mode=" + String(i) + "'><button>Mode " + String(i+1) + "</button></a></p>";
-    }
-
-    server.send(200, "text/html", page);
-}
-
-
-void handleOTAUpdate() {
-    server.send(200, "text/html", "<h2>Ready for OTA Update!</h2>");
-    Serial.println("Ready for OTA Update!");
 }
