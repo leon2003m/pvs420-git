@@ -30,10 +30,69 @@ struct Mode {
     const uint8_t command[23];
 };
 
+
+int currentZoom = 1; // Default zoom 1.0x
+
+// CRC16 function to compute the checksum
+uint16_t CRC16(uint8_t *data, size_t length) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= (data[i] << 8);
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x8000) {
+                crc = (crc << 1) ^ 0x8005;
+            } else {
+                crc = crc << 1;
+            }
+        }
+    }
+    return crc;
+}
+
+// Function to create the full custom zoom command
+void sendCustomZoomCommand(int zoom) {
+    uint8_t command[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00};
+    command[10] = zoom;  // Set custom zoom value
+    uint16_t crc = CRC16(command + 5, 16); // Calculate CRC16 for the relevant part
+    command[21] = (uint8_t)(crc & 0xFF);  // CRC low byte
+    command[22] = (uint8_t)((crc >> 8) & 0xFF);  // CRC high byte
+    
+    // Send the full command via Serial1
+    Serial1.write(command, sizeof(command));
+    
+    // Log the command for debugging
+    logBuffer += "Sent Command: ";
+    for (int i = 0; i < 23; i++) {
+        logBuffer += String(command[i], HEX) + " ";
+    }
+    logBuffer += "\n";
+    Serial.println(logBuffer);
+}
+
+// HTTP endpoint to change zoom level dynamically
+void handleZoomChange() {
+    if (server.hasArg("zoom")) {
+        int zoom = server.arg("zoom").toInt();  // Get zoom value from query parameter
+        if (zoom >= 1 && zoom <= 4) {
+            currentZoom = zoom;
+            sendCustomZoomCommand(zoom);  // Send the custom zoom command
+            server.send(200, "text/plain", "Zoom changed to: " + String(currentZoom) + "x");
+        } else {
+            server.send(400, "text/plain", "Invalid zoom value. Please enter a value between 1 and 4.");
+        }
+    }
+}
+
+
 struct Zoom {
     const char* name;
     const uint8_t command[23];
 };
+
+const uint8_t activate_shutter_control[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x3D};
+const uint8_t temperature_intervals[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x93, 0xB1};
+const uint8_t maximal_time_interval[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x02, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0xAC};
+const uint8_t save_parameters[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x10, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA9, 0xFB};
 
 // Modes
 const Mode modes[] = {
@@ -47,6 +106,7 @@ const Mode modes[] = {
     {"General Mode", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x60}}
 };
 
+
 // Zoom Levels
 const Zoom zoomLevels[] = {
     {"1x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x0A}},
@@ -57,7 +117,7 @@ const Zoom zoomLevels[] = {
 const int modeCount = sizeof(modes) / sizeof(modes[0]);
 const int zoomCount = sizeof(zoomLevels) / sizeof(zoomLevels[0]);
 int currentMode = 0;
-int currentZoom = 0;
+
 
 void sendCommand(const uint8_t* command) {
     logBuffer += "Sending Command: ";
@@ -95,23 +155,11 @@ void handleModeChange() {
     }
 }
 
-void handleZoomChange() {
-    if (server.hasArg("zoom")) {
-        int zoomIndex = server.arg("zoom").toInt();
-        if (zoomIndex >= 0 && zoomIndex < zoomCount) {
-            currentZoom = zoomIndex;
-            sendCommand(zoomLevels[currentZoom].command);
-            server.send(200, "text/plain", "Zoom changed to: " + String(zoomLevels[currentZoom].name));
-        } else {
-            server.send(400, "text/plain", "Invalid zoom index");
-        }
-    }
-}
 
 
 void setup() {
     Serial.begin(115200);
-    Serial1.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
     WiFi.mode(WIFI_AP);  // Enable SoftAP mode
     WiFi.softAPConfig(local_IP, local_IP, subnet);
     WiFi.softAP(ssid);
@@ -154,7 +202,17 @@ void setup() {
     // ✅ Start Telnet Server
     telnetServer.begin();
     Serial.println("Telnet Server Started - Use `telnet 192.168.4.1` to connect.");
-
+    delay(10000); // 10-second delay before sending
+    sendCommand(activate_shutter_control);
+    
+    delay(100); // Another 5-second delay before sending next command
+    sendCommand(temperature_intervals);
+    
+    delay(100); // Another 5-second delay before sending next command
+    sendCommand(maximal_time_interval);
+    
+    delay(100); // Another 5-second delay before sending save command
+    sendCommand(save_parameters);
 }
 void handleOTAUpdate() {
     server.send(200, "text/html", "<h2>Ready for OTA Update!</h2>");
@@ -222,3 +280,4 @@ void loop() {
     Serial.println("Loop running...");
     delay(1000);
 }
+
