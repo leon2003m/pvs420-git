@@ -13,23 +13,38 @@ WiFiServer telnetServer(23);
 const char* OTA_HOSTNAME = "ESP32-C6-OTA";
 const char* OTA_PASSWORD = "1234";
 
-
 //telnet client
 WiFiClient telnetClient;
 
 // Web Server setings
 WebServer server(80);
 
+//Zoomlvel
+int currentZoom = 1; // Default zoom 1.0x
+
 // Log Buffer
 String logBuffer = ""; // Non-persistent log storage
 bool debugMode = true;  // Set to false to disable debug logging
+
+//Pinout
 
 // Serial Communication Pins
 #define RX_PIN 17  // ESP32-C6 Serial1 RX
 #define TX_PIN 16  // ESP32-C6 Serial1 TX
 
+//Input Pins
+#define Middle_PIN 0
+#define Wifi_PIN 1
+#define Up_PIN 2
+#define Doen_PIN 21
+#define Left_PIN 22
+#define Right_Pin 23
+
+//Vibration Motor
+#define Vibe 19
+
 // View Modes
-int currentMode = 0; // Default mode White Hot
+int currentMode = 8; // Default mode General Mode
 struct Mode {
     const char* name;
     const uint8_t command[23];
@@ -47,42 +62,88 @@ const Mode modes[] = {
 };
 const int modeCount = sizeof(modes) / sizeof(modes[0]);
 
-// Define the Zoom struct before its usage
-struct Zoom {
-    const char* name;
-    const uint8_t command[23];
-};
-
-// Zoom Modes
-int currentZoom = 1; // Default zoom 1.0x
-
-// Zoom Levels
-const Zoom zoomLevels[] = {
-    {"1x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x0A}},
-    {"2x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41, 0x0C}},
-    {"3x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0x0E}},
-    {"4x", {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCF, 0x00}}
-};
-
-const int zoomCount = sizeof(zoomLevels) / sizeof(zoomLevels[0]);
-
-// Other Serial Commands
+// Shutter Serial Comands
 
 const uint8_t activate_shutter_control[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x3D};
 const uint8_t temperature_intervals[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x93, 0xB1};
 const uint8_t maximal_time_interval[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x02, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0xAC};
 const uint8_t save_parameters[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x10, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA9, 0xFB};
 
+//Setup
 
-void handleOTAUpdate();
+void serial_setup() {
+    Serial.begin(115200);
+    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+}
 
-void handleRoot();
+void wifi_setup() {
+    WiFi.mode(WIFI_AP);  // Enable SoftAP mode
+    WiFi.softAPConfig(IP_esp, IP_esp, subnet_mask);
+    WiFi.softAP(ssid);
+    if (WiFi.softAP(ssid)) {
+      logEvent("Wi-Fi started successfully!");
+    }
+}
+
+void webserver_setup() {
+    server.begin();
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/mode", handleModeChange);
+    server.on("/zoom", handleZoomChange);
+    server.on("/logs", handleLogs);
+    server.begin();
+    logEvent("Web Server Started - Use IP: " + IP_esp.toString());
+}
+
+void OTA_setup() {
+    ArduinoOTA.setHostname(OTA_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+
+    ArduinoOTA.onStart([]() {
+        logEvent("OTA Update Started...");
+    });
+
+    ArduinoOTA.onEnd([]() {
+        logEvent("OTA Update Complete!");
+    });
+
+    ArduinoOTA.onError([](ota_error_t error) {
+        logEvent("OTA Error [" + String(error) + "]");
+    });
+
+    ArduinoOTA.begin();
+}
+
+void telnet_setup() {
+    telnetServer.begin();
+    logEvent("Telnet Server Started - Use `telnet " + IP_esp.toString() + "` to connect.");
+}
+
+void setup_shutter_control() {
+    delay(100); 
+    sendCommand(activate_shutter_control);
+    delay(100); 
+    sendCommand(temperature_intervals);
+    delay(100); 
+    sendCommand(maximal_time_interval);
+    delay(100); 
+    sendCommand(save_parameters);
+};
+
+// Setup Function
+void setup() {
+    serial_setup();
+    wifi_setup();
+    webserver_setup();
+    OTA_setup();
+    telnet_setup();
+    setup_shutter_control();
+}
 
 
-// Function Declarations
+// LOOP
 
-
-
+// Log INFO
 void logEvent(const String& message) {
     String logMessage = "[INFO] [" + String(millis()) + "ms] " + message + "\n";
 
@@ -125,6 +186,38 @@ void handleLogs() {
     server.send(200, "text/plain", logBuffer);
 }
 
+//Zoom Handleing
+
+// HTTP endpoint to change zoom level dynamically
+void handleZoomChange() {
+    if (server.hasArg("zoom")) {
+        int zoom = server.arg("zoom").toInt();  // Get zoom value from query parameter
+        if (zoom >= 0 && zoom <= 8) {
+            currentZoom = zoom;
+            sendCustomZoomCommand(zoom);  // Send the custom zoom command
+            server.send(200, "text/plain", "Zoom changed to: " + String(currentZoom) + "x");
+        } else {
+            server.send(400, "text/plain", "Invalid zoom value. Please enter a value between 1 and 4.");
+        }
+    }
+}
+
+// CRC16 function to compute the checksum for dynamic zoom command
+uint16_t CRC16(uint8_t *data, size_t length) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= (data[i] << 8);
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x8000) {
+                crc = (crc << 1) ^ 0x8005;
+            } else {
+                crc = crc << 1;
+            }
+        }
+    }
+    return crc;
+}
+
 // Function to create and send a custom zoom command
 void sendCustomZoomCommand(int zoom) {
     uint8_t command[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00};
@@ -153,36 +246,20 @@ void sendCustomZoomCommand(int zoom) {
 }
 
 
-// HTTP endpoint to change zoom level dynamically
-void handleZoomChange() {
-    if (server.hasArg("zoom")) {
-        int zoom = server.arg("zoom").toInt();  // Get zoom value from query parameter
-        if (zoom >= 1 && zoom <= 4) {
-            currentZoom = zoom;
-            sendCustomZoomCommand(zoom);  // Send the custom zoom command
-            server.send(200, "text/plain", "Zoom changed to: " + String(currentZoom) + "x");
+
+//View Modechange
+void handleModeChange() {
+    if (server.hasArg("mode")) {
+        int modeIndex = server.arg("mode").toInt();
+        if (modeIndex >= 0 && modeIndex < modeCount) {
+            currentMode = modeIndex;
+            logEvent("Mode changed to: " + String(modes[currentMode].name));
+            sendCommand(modes[currentMode].command);
+            server.send(200, "text/plain", "Mode changed to: " + String(modes[currentMode].name));
         } else {
-            server.send(400, "text/plain", "Invalid zoom value. Please enter a value between 1 and 4.");
+            server.send(400, "text/plain", "Invalid mode index");
         }
     }
-}
-
-//Zoom Handleing
-
-// CRC16 function to compute the checksum for dynamic zoom command
-uint16_t CRC16(uint8_t *data, size_t length) {
-    uint16_t crc = 0xFFFF;
-    for (size_t i = 0; i < length; i++) {
-        crc ^= (data[i] << 8);
-        for (int j = 0; j < 8; j++) {
-            if (crc & 0x8000) {
-                crc = (crc << 1) ^ 0x8005;
-            } else {
-                crc = crc << 1;
-            }
-        }
-    }
-    return crc;
 }
 
 void sendCommand(const uint8_t* command) {
@@ -201,29 +278,6 @@ void sendCommand(const uint8_t* command) {
 
     // Send via Serial1
     Serial1.write(command, 23);
-}
-
-
-void handleModeChange() {
-    if (server.hasArg("mode")) {
-        int modeIndex = server.arg("mode").toInt();
-        if (modeIndex >= 0 && modeIndex < modeCount) {
-            currentMode = modeIndex;
-            sendCommand(modes[currentMode].command);
-            server.send(200, "text/plain", "Mode changed to: " + String(modes[currentMode].name));
-        } else {
-            server.send(400, "text/plain", "Invalid mode index");
-        }
-    }
-}
-
-void handleOTAUpdate() {
-    server.send(200, "text/html", "<h2>Ready for OTA Update!</h2>");
-    logEvent("Ready for OTA Update!");
-}
-
-void handleSaveSettings() {
-    server.send(200, "text/plain", "Settings saved: Mode - " + String(modes[currentMode].name) + ", Zoom - " + String(zoomLevels[currentZoom].name));
 }
 
 void handleRoot() {
@@ -263,7 +317,7 @@ void handleRoot() {
 }
 
 
-void telnet_connection() {
+void telnet_rw() {
     if (telnetServer.hasClient()) {
         if (telnetClient && telnetClient.connected()) {
             telnetClient.stop();  // Close old connection
@@ -275,88 +329,21 @@ void telnet_connection() {
     // ✅ Forward Serial Output to Telnet
     if (telnetClient && telnetClient.connected()) {
         while (Serial.available()) {
-            char c = Serial.read();
-            telnetClient.write(c);  // Send Serial input to Telnet
+            char serial1read = Serial.read();
+            telnetClient.write(serial1read);  // Send Serial input to Telnet
         }
         while (telnetClient.available()) {
-            char c = telnetClient.read();
-            Serial1.write(c);  // Send Telnet input to Serial
+            char serial1write = telnetClient.read();
+            Serial1.write(serial1write);  // Send Telnet input to Serial
         }
 }
 }
-void serial_setup() {
-    Serial.begin(115200);
-    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
-}
-void wifi_setup() {
-    WiFi.mode(WIFI_AP);  // Enable SoftAP mode
-    WiFi.softAPConfig(IP_esp, IP_esp, subnet_mask);
-    WiFi.softAP(ssid);
-    if (WiFi.softAP(ssid)) {
-      logEvent("Wi-Fi started successfully!");
-    }
-}
 
-void webserver_setup() {
-    server.begin();
-    server.on("/", HTTP_GET, handleRoot);
-    server.on("/mode", handleModeChange);
-    server.on("/zoom", handleZoomChange);
-    server.on("/save", handleSaveSettings);
-    server.on("/update", HTTP_GET, handleOTAUpdate);
-    server.on("/logs", handleLogs);
-    server.begin();
-    logEvent("Web Server Started - Use IP: " + IP_esp.toString());
-}
-
-void OTA_setup() {
-    ArduinoOTA.setHostname(OTA_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-
-    ArduinoOTA.onStart([]() {
-        logEvent("OTA Update Started...");
-    });
-
-    ArduinoOTA.onEnd([]() {
-        logEvent("OTA Update Complete!");
-    });
-
-    ArduinoOTA.onError([](ota_error_t error) {
-        logEvent("OTA Error [" + String(error) + "]");
-    });
-
-    ArduinoOTA.begin();
-}
-
-void telnet_setup() {
-    telnetServer.begin();
-    logEvent("Telnet Server Started - Use `telnet " + IP_esp.toString() + "` to connect.");
-    delay(100); 
-    sendCommand(activate_shutter_control);
-    
-    delay(100); 
-    sendCommand(temperature_intervals);
-    
-    delay(100); 
-    sendCommand(maximal_time_interval);
-    
-    delay(100); 
-    sendCommand(save_parameters);
-}
-
-// Setup Function
-void setup() {
-    serial_setup();
-    wifi_setup();
-    webserver_setup();
-    OTA_setup();
-    telnet_setup();
-}
 
 
 void loop() {
     server.handleClient();
     ArduinoOTA.handle();
-    telnet_connection();
+    telnet_rw();
 }
 
