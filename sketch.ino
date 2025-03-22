@@ -2,16 +2,23 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoOTA.h>
+#include <Preferences.h>
 
-// Wi-Fi Settings
-const char* ssid = "PVS420";  // Open Wi-Fi network
-const IPAddress IP_esp(10, 4, 20, 1);
-const IPAddress subnet_mask(255, 255, 255, 0);
-WiFiServer telnetServer(23);
+//Global preferences
+Preferences prefs;
+
+
+// Wi-Fi Settings (mutable, for Preferences)
+String wifi_ssid = "PVS420";
+String wifi_password = "";  // Empty = open
+IPAddress IP_esp(10, 4, 20, 1);
+IPAddress subnet_mask(255, 255, 255, 0);
+
+
 
 // OTA Configuration
 const char* OTA_HOSTNAME = "ESP32-C6-OTA";
-const char* OTA_PASSWORD = "1234";
+String OTA_password = "1234";
 
 //telnet client
 WiFiClient telnetClient;
@@ -19,331 +26,561 @@ WiFiClient telnetClient;
 // Web Server setings
 WebServer server(80);
 
-//Zoomlvel
-int currentZoom = 1; // Default zoom 1.0x
+//Zoomlevel
+float currentZoom = 1;  // Default zoom 1.0x
 
 // Log Buffer
-String logBuffer = ""; // Non-persistent log storage
+String logBuffer = "";  // Non-persistent log storage
 bool debugMode = true;  // Set to false to disable debug logging
 
-//Pinout
+//awake time
+unsigned long startTime = millis();
+
 
 // Serial Communication Pins
 #define RX_PIN 17  // ESP32-C6 Serial1 RX
 #define TX_PIN 16  // ESP32-C6 Serial1 TX
 
 //Input Pins
-#define Middle_PIN 0
-#define Wifi_PIN 1
-#define Up_PIN 2
-#define Doen_PIN 21
-#define Left_PIN 22
-#define Right_Pin 23
+#define MIDDLE_PIN GPIO_NUM_0
+#define WIFI_PIN GPIO_NUM_1
+#define UP_PIN GPIO_NUM_2
+#define DOWN_PIN GPIO_NUM_21
+#define LEFT_PIN GPIO_NUM_22
+#define RIGHT_PIN GPIO_NUM_23
 
 //Vibration Motor
 #define Vibe 19
 
+// Variables will change:
+int ledState = HIGH;        // the current state of the output pin
+int buttonState;            // the current reading from the input pin
+int lastButtonState = LOW;  // the previous reading from the input pin
+
+// the following variables are unsigned longs because the time, measured in
+// milliseconds, will quickly become a bigger number than can be stored in an int.
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+
 // View Modes
-int currentMode = 8; // Default mode General Mode
+int currentMode = 8;  // Default mode General Mode
 struct Mode {
-    const char* name;
-    const uint8_t command[23];
+  const char* name;
+  const uint8_t command[23];
 };
 
+
 const Mode modes[] = {
-    {"White Hot", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x6D}},
-    {"Black Hot", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x69, 0x6F}},
-    {"Low Temp Highlight", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC5, 0x65}},
-    {"Low Contrast", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2F, 0x63}},
-    {"High Contrast", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x68}},
-    {"Highlight", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6B}},
-    {"Outline Mode", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x7D}},
-    {"General Mode", {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x60}}
+  { "White Hot", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x6D } },
+  { "Black Hot", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x03, 0x45, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x69, 0x6F } },
+  { "LOW Temp Highlight", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC5, 0x65 } },
+  { "LOW Contrast", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2F, 0x63 } },
+  { "High Contrast", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x68 } },
+  { "Highlight", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6B } },
+  { "Outline Mode", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x7D } },
+  { "General Mode", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x60 } }
 };
 const int modeCount = sizeof(modes) / sizeof(modes[0]);
 
 // Shutter Serial Comands
 
-const uint8_t activate_shutter_control[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x3D};
-const uint8_t temperature_intervals[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x93, 0xB1};
-const uint8_t maximal_time_interval[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x02, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0xAC};
-const uint8_t save_parameters[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x10, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA9, 0xFB};
+const uint8_t activate_shutter_control[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x3D };
+const uint8_t temperature_intervals[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x93, 0xB1 };
+const uint8_t maximal_time_interval[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x02, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0xAC };
+const uint8_t save_parameters[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x10, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA9, 0xFB };
 
 //Setup
 
 void serial_setup() {
-    Serial.begin(115200);
-    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  Serial.begin(115200);
+  Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
 }
 
 void wifi_setup() {
-    WiFi.mode(WIFI_AP);  // Enable SoftAP mode
-    WiFi.softAPConfig(IP_esp, IP_esp, subnet_mask);
-    WiFi.softAP(ssid);
-    if (WiFi.softAP(ssid)) {
-      logEvent("Wi-Fi started successfully!");
-    }
+  WiFi.mode(WIFI_AP);  // Enable SoftAP
+  WiFi.softAPConfig(IP_esp, IP_esp, subnet_mask);
+
+  if (wifi_password.length() > 0) {
+    WiFi.softAP(wifi_ssid.c_str(), wifi_password.c_str());
+  } else {
+    WiFi.softAP(wifi_ssid.c_str());  // Open network
+  }
+
+  if (WiFi.softAPgetStationNum() >= 0) {
+    logEvent("Wi-Fi started successfully!");
+  }
 }
 
+
 void webserver_setup() {
-    server.begin();
-    server.on("/", HTTP_GET, handleRoot);
-    server.on("/mode", handleModeChange);
-    server.on("/zoom", handleZoomChange);
-    server.on("/logs", handleLogs);
-    server.begin();
-    logEvent("Web Server Started - Use IP: " + IP_esp.toString());
+  server.begin();
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/mode", handleModeChange);
+  server.on("/zoom", handleZoomChange);
+  server.on("/logs", handleLogs);
+  server.begin();
+  logEvent("Web Server Started - Use IP: " + IP_esp.toString());
 }
 
 void OTA_setup() {
-    ArduinoOTA.setHostname(OTA_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_password.c_str());
 
-    ArduinoOTA.onStart([]() {
-        logEvent("OTA Update Started...");
-    });
 
-    ArduinoOTA.onEnd([]() {
-        logEvent("OTA Update Complete!");
-    });
+  ArduinoOTA.onStart([]() {
+    logEvent("OTA Update Started...");
+  });
 
-    ArduinoOTA.onError([](ota_error_t error) {
-        logEvent("OTA Error [" + String(error) + "]");
-    });
+  ArduinoOTA.onEnd([]() {
+    logEvent("OTA Update Complete!");
+  });
 
-    ArduinoOTA.begin();
-}
+  ArduinoOTA.onError([](ota_error_t error) {
+    logEvent("OTA Error [" + String(error) + "]");
+  });
 
-void telnet_setup() {
-    telnetServer.begin();
-    logEvent("Telnet Server Started - Use `telnet " + IP_esp.toString() + "` to connect.");
+  ArduinoOTA.begin();
 }
 
 void setup_shutter_control() {
-    delay(100); 
-    sendCommand(activate_shutter_control);
-    delay(100); 
-    sendCommand(temperature_intervals);
-    delay(100); 
-    sendCommand(maximal_time_interval);
-    delay(100); 
-    sendCommand(save_parameters);
+  delay(100);
+  sendCommand(activate_shutter_control);
+  delay(100);
+  sendCommand(temperature_intervals);
+  delay(100);
+  sendCommand(maximal_time_interval);
+  delay(100);
+  sendCommand(save_parameters);
 };
 
-// Setup Function
-void setup() {
-    serial_setup();
-    wifi_setup();
-    webserver_setup();
-    OTA_setup();
-    telnet_setup();
-    setup_shutter_control();
-}
+void setup_buttons() {
+  pinMode(MIDDLE_PIN, INPUT_PULLUP);
+  pinMode(WIFI_PIN, INPUT_PULLUP);
+  pinMode(UP_PIN, INPUT_PULLUP);
+  pinMode(DOWN_PIN, INPUT_PULLUP);
+  pinMode(LEFT_PIN, INPUT_PULLUP);
+  pinMode(RIGHT_PIN, INPUT_PULLUP);
 
+  gpio_hold_en(MIDDLE_PIN);
+  gpio_hold_en(WIFI_PIN);
+  gpio_hold_en(UP_PIN);
+  gpio_hold_en(DOWN_PIN);
+  gpio_hold_en(LEFT_PIN);
+  gpio_hold_en(RIGHT_PIN);
+}
 
 // LOOP
 
 // Log INFO
 void logEvent(const String& message) {
-    String logMessage = "[INFO] [" + String(millis()) + "ms] " + message + "\n";
+  String logMessage = "[INFO] [" + String(millis()) + "ms] " + message + "\n";
+
+  // Serial Output
+  Serial.print(logMessage);
+
+  // Store in Log Buffer (limit buffer size to 1000 chars)
+  logBuffer += logMessage;
+  if (logBuffer.length() > 1000) {
+    logBuffer = logBuffer.substring(logBuffer.length() - 1000);
+  }
+}
+
+void debugLogEvent(const String& message) {
+  if (debugMode) {
+    String logMessage = "[DEBUG] [" + String(millis()) + "ms] " + message + "\n";
 
     // Serial Output
     Serial.print(logMessage);
 
     // Telnet Client Output (if connected)
     if (telnetClient && telnetClient.connected()) {
-        telnetClient.print(logMessage);
+      telnetClient.print(logMessage);
     }
 
     // Store in Log Buffer (limit buffer size to 1000 chars)
     logBuffer += logMessage;
-    if (logBuffer.length() > 1000) {  
-        logBuffer = logBuffer.substring(logBuffer.length() - 1000);
+    if (logBuffer.length() > 1000) {
+      logBuffer = logBuffer.substring(logBuffer.length() - 1000);
     }
-}
-
-void debugLogEvent(const String& message) {
-    if (debugMode) {
-        String logMessage = "[DEBUG] [" + String(millis()) + "ms] " + message + "\n";
-
-        // Serial Output
-        Serial.print(logMessage);
-
-        // Telnet Client Output (if connected)
-        if (telnetClient && telnetClient.connected()) {
-            telnetClient.print(logMessage);
-        }
-
-        // Store in Log Buffer (limit buffer size to 1000 chars)
-        logBuffer += logMessage;
-        if (logBuffer.length() > 1000) {  
-            logBuffer = logBuffer.substring(logBuffer.length() - 1000);
-        }
-    }
+  }
 }
 
 void handleLogs() {
-    server.send(200, "text/plain", logBuffer);
+  server.send(200, "text/plain", logBuffer);
 }
 
 //Zoom Handleing
 
 // HTTP endpoint to change zoom level dynamically
 void handleZoomChange() {
-    if (server.hasArg("zoom")) {
-        int zoom = server.arg("zoom").toInt();  // Get zoom value from query parameter
-        if (zoom >= 0 && zoom <= 8) {
-            currentZoom = zoom;
-            sendCustomZoomCommand(zoom);  // Send the custom zoom command
-            server.send(200, "text/plain", "Zoom changed to: " + String(currentZoom) + "x");
-        } else {
-            server.send(400, "text/plain", "Invalid zoom value. Please enter a value between 1 and 4.");
-        }
+  if (server.hasArg("zoom")) {
+    int zoom = server.arg("zoom").toInt();  // Get zoom value from query parameter
+    if (zoom >= 1 && zoom <= 8) {
+      currentZoom = zoom;
+      sendCustomZoomCommand(zoom);  // Send the custom zoom command
+      server.send(200, "text/plain", "Zoom changed to: " + String(currentZoom) + "x");
+    } else {
+      server.send(400, "text/plain", "Invalid zoom value. Please enter a value between 1 and 4.");
     }
+  }
 }
 
 // CRC16 function to compute the checksum for dynamic zoom command
-uint16_t CRC16(uint8_t *data, size_t length) {
-    uint16_t crc = 0xFFFF;
-    for (size_t i = 0; i < length; i++) {
-        crc ^= (data[i] << 8);
-        for (int j = 0; j < 8; j++) {
-            if (crc & 0x8000) {
-                crc = (crc << 1) ^ 0x8005;
-            } else {
-                crc = crc << 1;
-            }
-        }
+uint16_t CRC16(uint8_t* data, size_t length) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < length; i++) {
+    crc ^= (data[i] << 8);
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x8000) {
+        crc = (crc << 1) ^ 0x8005;
+      } else {
+        crc = crc << 1;
+      }
     }
-    return crc;
+  }
+  return crc;
 }
 
 // Function to create and send a custom zoom command
 void sendCustomZoomCommand(int zoom) {
-    uint8_t command[23] = {0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00};
-    command[10] = zoom;  // Set custom zoom value
+  uint8_t command[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00 };
 
-    // Log input debug information
-    debugLogEvent("Preparing Zoom Command - Input Zoom Level: " + String(zoom));
+  int zoomValue = (int)(zoom * 2);  // Convert float zoom to an integer (e.g., 1.5 -> 3)
+  command[10] = zoomValue;          // Set custom zoom value
 
-    // Calculate CRC16 for the relevant part of the command
-    uint16_t crc = CRC16(command + 5, 16);
-    command[21] = (uint8_t)(crc & 0xFF);  // CRC low byte
-    command[22] = (uint8_t)((crc >> 8) & 0xFF);  // CRC high byte
+  // Log input debug information
+  debugLogEvent("Preparing Zoom Command - Input Zoom Level: " + String(zoom));
 
-    // Send the full command via Serial1
-    Serial1.write(command, sizeof(command));
+  // Calculate CRC16 for the relevant part of the command
+  uint16_t crc = CRC16(command + 5, 16);
+  command[21] = (uint8_t)(crc & 0xFF);         // CRC LOW byte
+  command[22] = (uint8_t)((crc >> 8) & 0xFF);  // CRC high byte
 
-    // Format final command string
-    String commandString = "Final Zoom Command: ";
-    for (int i = 0; i < 23; i++) {
-        commandString += String(command[i], HEX) + " ";
-    }
+  // Send the full command via Serial1
+  Serial1.write(command, sizeof(command));
 
-    // Log the command
-    logEvent("Zoom changed to " + String(zoom) + "x");
-    debugLogEvent(commandString);
+  // Format final command string
+  String commandString = "Final Zoom Command: ";
+  for (int i = 0; i < 23; i++) {
+    commandString += String(command[i], HEX) + " ";
+  }
+
+  // Log the command
+  logEvent("Zoom changed to " + String(zoom) + "x");
+  debugLogEvent(commandString);
 }
 
 
 
 //View Modechange
 void handleModeChange() {
-    if (server.hasArg("mode")) {
-        int modeIndex = server.arg("mode").toInt();
-        if (modeIndex >= 0 && modeIndex < modeCount) {
-            currentMode = modeIndex;
-            logEvent("Mode changed to: " + String(modes[currentMode].name));
-            sendCommand(modes[currentMode].command);
-            server.send(200, "text/plain", "Mode changed to: " + String(modes[currentMode].name));
-        } else {
-            server.send(400, "text/plain", "Invalid mode index");
-        }
+  if (server.hasArg("mode")) {
+    int modeIndex = server.arg("mode").toInt();
+    if (modeIndex >= 0 && modeIndex < modeCount) {
+      currentMode = modeIndex;
+      logEvent("Mode changed to: " + String(modes[currentMode].name));
+
+      if (modes[currentMode].command == nullptr) {
+        logEvent("[ERROR] modes[currentMode].command is nullptr!");
+        server.send(500, "text/plain", "Internal error: Command not found.");
+        return;
+      }
+
+      sendCommand(modes[currentMode].command);
+      server.send(200, "text/plain", "Mode changed to: " + String(modes[currentMode].name));
+    } else {
+      logEvent("[ERROR] Invalid mode index: " + String(modeIndex));
+      server.send(400, "text/plain", "Invalid mode index");
     }
+  }
+}
+
+
+void waitForButtonRelease(int pin) {
+  delay(50);
+  while (digitalRead(pin) == LOW)
+    ;
+  delay(50);
 }
 
 void sendCommand(const uint8_t* command) {
-    // Debug log for input command
-    debugLogEvent("Preparing to send command");
+  if (command == nullptr) {
+    logEvent("[ERROR] sendCommand received nullptr!");
+    return;
+  }
 
-    // Format final command string for logging
-    String commandString = "Final Command Sent: ";
-    for (int i = 0; i < 23; i++) {
-        commandString += String(command[i], HEX) + " ";
-    }
+  // Format final command string for logging
+  String commandString = "Command Sent: ";
+  for (int i = 0; i < 23; i++) {
+    commandString += String(command[i], HEX) + " ";
+  }
 
-    // Log and send the command
-    logEvent("Sending command...");
-    debugLogEvent(commandString);
+  // Log and send the command
+  logEvent("Sending command...");
+  debugLogEvent(commandString);
 
-    // Send via Serial1
-    Serial1.write(command, 23);
+  // Send via Serial1
+  Serial1.write(command, 23);
 }
 
 void handleRoot() {
-    String page = "<h2>PVS420 Web Server</h2>";
-    
-    // Zoom Controls section
-    page += "<h3>Zoom Controls</h3>";
-    page += "<input type='number' id='zoomInput' placeholder='Enter zoom level (1-4)' min='1' max='4' value='1'>";
-    page += "<button onclick='changeZoom()'>Set Zoom</button>";
-    
-    page += "<script>";
-    page += "function changeZoom() {";
-    page += "    var zoom = document.getElementById('zoomInput').value;";  // Get the custom zoom value from input
-    page += "    fetch('/zoom?zoom=' + zoom);";  // Send custom zoom value to the server
-    page += "}";
-    page += "</script>";
-    
-    // View Mode Controls section
-    page += "<h3>View Mode Controls</h3>";
-    page += "<select id='modeSelect' onchange='changeMode()'>";
-    for (int i = 0; i < modeCount; i++) {
-        page += "<option value='" + String(i) + "'>" + String(modes[i].name) + "</option>";
+  String page = "<h2>PVS420 Web Server</h2>";
+
+  // Zoom Controls section
+  page += "<h3>Zoom Controls</h3>";
+  page += "<input type='number' id='zoomInput' placeholder='Enter zoom level (1-4)' min='1' max='4' value='1'>";
+  page += "<button onclick='changeZoom()'>Set Zoom</button>";
+
+  page += "<script>";
+  page += "function changeZoom() {";
+  page += "    var zoom = document.getElementById('zoomInput').value;";  // Get the custom zoom value from input
+  page += "    fetch('/zoom?zoom=' + zoom);";                            // Send custom zoom value to the server
+  page += "}";
+  page += "</script>";
+
+  // View Mode Controls section
+  page += "<h3>View Mode Controls</h3>";
+  page += "<select id='modeSelect' onchange='changeMode()'>";
+  for (int i = 0; i < modeCount; i++) {
+    page += "<option value='" + String(i) + "'>" + String(modes[i].name) + "</option>";
+  }
+  page += "</select>";
+
+  page += "<script>";
+  page += "function changeMode() {";
+  page += "    var mode = document.getElementById('modeSelect').value;";  // Get the selected mode
+  page += "    fetch('/mode?mode=' + mode);";                             // Send the selected mode to the server
+  page += "}";
+  page += "</script>";
+
+  // View Logs button
+  page += "<p><a href='/logs'><button>View Logs</button></a></p>";
+
+  server.send(200, "text/html", page);  // Send the HTML page to the client
+}
+
+#define DEBOUNCE_DELAY 50  // Debounce delay in milliseconds
+
+// Define the Button struct **before** using it
+struct Button {
+  int pin;
+  unsigned long lastDebounceTime;
+  bool lastState;
+  bool pressed;
+};
+
+// Declare function prototype for debounce (optional but ensures ordering)
+bool isButtonPressed(Button& btn);
+
+// Initialize button objects
+Button buttons[] = {
+  { RIGHT_PIN, 0,  digitalRead(RIGHT_PIN), false },
+  { LEFT_PIN, 0,  digitalRead(RIGHT_PIN), false },
+  { UP_PIN, 0,  digitalRead(RIGHT_PIN), false },
+  { DOWN_PIN, 0,  digitalRead(RIGHT_PIN), false },
+  { MIDDLE_PIN, 0,  digitalRead(RIGHT_PIN), false }
+};
+
+void init_buttons() {
+  for (int i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+    buttons[i].lastState = digitalRead(buttons[i].pin);
+  }
+}
+
+
+void saveSettings() {
+  if (!prefs.begin("pvs420", false)) {
+    logEvent("[ERROR] Could not open preferences for writing.");
+    return;
+  }
+
+  prefs.putInt("mode", currentMode);
+  prefs.putFloat("zoom", currentZoom);
+  prefs.putString("wifi_ssid", wifi_ssid);
+  prefs.putString("wifi_password", wifi_password);
+  prefs.putString("ota_password", OTA_password);
+  prefs.putString("ip", IP_esp.toString());
+  prefs.putString("subnet", subnet_mask.toString());
+
+  prefs.end();  // Always end session
+  logEvent("✅ Settings saved to NVS.");
+}
+
+
+
+void loadSettings() {
+  if (prefs.begin("pvs420", true)) {
+    currentMode = prefs.getInt("mode", 7);
+    currentZoom = prefs.getFloat("zoom", 1.0);
+    wifi_ssid = prefs.getString("wifi_ssid", "PVS420");
+    wifi_password = prefs.getString("wifi_password", "");
+    OTA_password = prefs.getString("ota_password", "1234");
+    IP_esp.fromString(prefs.getString("ip", "10.4.20.1"));
+    subnet_mask.fromString(prefs.getString("subnet", "255.255.255.0"));
+    prefs.end();
+
+    logEvent("Settings loaded!");
+  }
+}
+
+// Function to handle debounced button press
+bool isButtonPressed(Button& btn) {
+  int reading = digitalRead(btn.pin);
+
+  if (reading != btn.lastState) {
+    btn.lastDebounceTime = millis();  // Reset debounce timer
+  }
+
+  if ((millis() - btn.lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading == LOW && !btn.pressed) {  // Button just pressed
+      btn.lastState = reading;
+      btn.pressed = true;
+      return true;
+    } else if (reading == HIGH) {  // Button released
+      btn.pressed = false;
     }
-    page += "</select>";
-    
-    page += "<script>";
-    page += "function changeMode() {";
-    page += "    var mode = document.getElementById('modeSelect').value;";  // Get the selected mode
-    page += "    fetch('/mode?mode=' + mode);";  // Send the selected mode to the server
-    page += "}";
-    page += "</script>";
-    
-    // View Logs button
-    page += "<p><a href='/logs'><button>View Logs</button></a></p>";
-    
-    server.send(200, "text/html", page);  // Send the HTML page to the client
+  }
+
+  btn.lastState = reading;
+  return false;  // No valid press detected
 }
 
+void button_controlls() {
 
-void telnet_rw() {
-    if (telnetServer.hasClient()) {
-        if (telnetClient && telnetClient.connected()) {
-            telnetClient.stop();  // Close old connection
-        }
-        telnetClient = telnetServer.available();
-        logEvent("New Telnet Client Connected!");
-        telnetClient.println("ESP32-C6 Wi-Fi Serial Monitor\n");
+  if (isButtonPressed(buttons[0])) {  // RIGHT button
+    int nextMode = (currentMode + 1) % modeCount;
+    currentMode = nextMode;
+    logEvent("Mode changed to: " + String(modes[currentMode].name));
+    sendCommand(modes[currentMode].command);
+  }
+
+  if (isButtonPressed(buttons[1])) {  // LEFT button
+    int nextMode = (currentMode - 1 + modeCount) % modeCount;
+    currentMode = nextMode;
+    logEvent("Mode changed to: " + String(modes[currentMode].name));
+    sendCommand(modes[nextMode].command);
+  }
+
+  if (isButtonPressed(buttons[2])) {  // UP button
+    if (currentZoom < 8.0) {          // Ensures max zoom is 8.0x
+      currentZoom += 0.5;
+      currentZoom = min(currentZoom, 8.0f);  // Ensure it never exceeds 8.0
+      sendCustomZoomCommand(currentZoom);
+      logEvent("Zoom increased to: " + String(currentZoom) + "x");
+    } else {
+      logEvent("Zoom already at max: " + String(currentZoom) + "x");
     }
-    // ✅ Forward Serial Output to Telnet
-    if (telnetClient && telnetClient.connected()) {
-        while (Serial.available()) {
-            char serial1read = Serial.read();
-            telnetClient.write(serial1read);  // Send Serial input to Telnet
-        }
-        while (telnetClient.available()) {
-            char serial1write = telnetClient.read();
-            Serial1.write(serial1write);  // Send Telnet input to Serial
-        }
+  }
+
+  if (isButtonPressed(buttons[3])) {  // DOWN button
+    if (currentZoom > 0.5) {          // Ensures min zoom is 0.5x
+      currentZoom -= 0.5;
+      currentZoom = max(currentZoom, 1.0f);  // Ensure it never drops below 1
+      sendCustomZoomCommand(currentZoom);
+      logEvent("Zoom decreased to: " + String(currentZoom) + "x");
+    }
+  }
+  if (isButtonPressed(buttons[4])) {  // Middle button
+    saveSettings();
+  }
+
+
+  // ✅ Forward Serial Output to Telnet
+  if (telnetClient && telnetClient.connected()) {
+    while (Serial.available()) {
+      char serial1read = Serial.read();
+      telnetClient.write(serial1read);  // Send Serial input to Telnet
+    }
+    while (telnetClient.available()) {
+      char serial1write = telnetClient.read();
+      Serial1.write(serial1write);  // Send Telnet input to Serial
+    }
+  }
 }
-}
 
+void wifi_mode() {
+  debugLogEvent("Wifi Mode");
+  wifi_setup();
+  webserver_setup();
+  OTA_setup();
 
-
-void loop() {
+  while (millis() - startTime < 240000) {  // Stay awake for 4 minute
     server.handleClient();
     ArduinoOTA.handle();
-    telnet_rw();
+    button_controlls();
+  }
 }
 
+void button_only_mode() {
+  logEvent("Button only Mode");
+  while (millis() - startTime < 100000) {  // Stay awake 30 seconds
+    if (digitalRead(WIFI_PIN) == LOW) {    // If button pressed, restart into Wi-Fi mode
+      return;
+    }
+    button_controlls();
+  }
+}
+
+void sleep_setup() {
+  // Set GPIOs for EXT1 wakeup
+  pinMode(MIDDLE_PIN, INPUT_PULLUP);
+  pinMode(WIFI_PIN, INPUT_PULLUP);
+  pinMode(UP_PIN, INPUT_PULLUP);
+
+  // Hold the pullups during deep sleep
+  gpio_hold_en(MIDDLE_PIN);
+  gpio_hold_en(WIFI_PIN);
+  gpio_hold_en(UP_PIN);
+
+  // Create bitmask for EXT1 wakeup on GPIOs 0, 1, and 2
+  const uint64_t WAKEUP_PINS = (1ULL << MIDDLE_PIN) | (1ULL << WIFI_PIN) | (1ULL << UP_PIN);
+
+  esp_sleep_enable_ext1_wakeup(WAKEUP_PINS, ESP_EXT1_WAKEUP_ANY_LOW);
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT1:
+      logEvent("Wakeup caused by EXT1 (GPIO LOW)");
+      break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+      logEvent("Cold boot (power on or reset)");
+      break;
+    default:
+      logEvent("Wakeup cause: " + String(wakeup_reason));
+      break;
+  }
+}
+
+// Setup Function
+void setup() {
+  startTime = millis();
+  setup_buttons();
+  init_buttons();
+  serial_setup();
+  loadSettings();
+  sleep_setup();
+  logEvent("Applying saved mode + zoom...");
+
+esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
+
+if (reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
+  logEvent("Cold boot detected. Applying saved mode and zoom.");
+  setup_shutter_control();
+  delay(100);
+  sendCommand(modes[currentMode].command);
+  sendCustomZoomCommand(currentZoom);
+}
+
+  button_only_mode();
+
+  if (digitalRead(WIFI_PIN) == LOW) {
+    wifi_mode();
+  }
+
+  delay(100);
+  logEvent("Entering sleep mode...");
+  delay(100);
+  esp_deep_sleep_start();
+}
+
+void loop() {}
