@@ -77,7 +77,7 @@ const Mode modes[] = {
   { "LOW Contrast", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2F, 0x63 } },
   { "High Contrast", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x68 } },
   { "Highlight", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6B } },
-  { "Outline Mode", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x7D } },
+  { "Outline Mode", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x45, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7, 0xAB } },
   { "General Mode", { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x04, 0x42, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x60 } }
 };
 const int modeCount = sizeof(modes) / sizeof(modes[0]);
@@ -88,6 +88,8 @@ const uint8_t activate_shutter_control[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x1
 const uint8_t temperature_intervals[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x93, 0xB1 };
 const uint8_t maximal_time_interval[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x02, 0x42, 0x00, 0x02, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0xAC };
 const uint8_t save_parameters[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x10, 0x10, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA9, 0xFB };
+
+//other serial commands
 
 //Setup
 
@@ -225,50 +227,61 @@ void handleZoomChange() {
   }
 }
 
-// CRC16 function to compute the checksum for dynamic zoom command
-uint16_t CRC16(uint8_t* data, size_t length) {
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 0; i < length; i++) {
-    crc ^= (data[i] << 8);
+uint16_t CRC(const uint8_t* data, size_t len) {
+  uint16_t crc = 0x0000;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= (uint16_t)data[i] << 8;
     for (int j = 0; j < 8; j++) {
-      if (crc & 0x8000) {
-        crc = (crc << 1) ^ 0x8005;
-      } else {
-        crc = crc << 1;
-      }
+      if (crc & 0x8000)
+        crc = (crc << 1) ^ 0x1021;
+      else
+        crc <<= 1;
     }
   }
   return crc;
 }
 
-// Function to create and send a custom zoom command
-void sendCustomZoomCommand(int zoom) {
-  uint8_t command[23] = { 0x55, 0x43, 0x49, 0x12, 0x00, 0x01, 0x31, 0x42, 0x00, 0x00 };
+void sendCustomZoomCommand(float zoom) {
+  uint8_t command[23] = {0};
 
-  int zoomValue = (int)(zoom * 2);  // Convert float zoom to an integer (e.g., 1.5 -> 3)
-  command[10] = zoomValue;          // Set custom zoom value
+  // Fill header
+  command[0] = 0x55;
+  command[1] = 0x43;
+  command[2] = 0x49;
+  command[3] = 0x12;
+  command[4] = 0x00;
+  command[5] = 0x01;
+  command[6] = 0x31;
+  command[7] = 0x42;
+  command[8] = 0x00;
+  command[9] = 0x00;
 
-  // Log input debug information
-  debugLogEvent("Preparing Zoom Command - Input Zoom Level: " + String(zoom));
+  // Set zoom level
+  command[10] = (uint8_t)(zoom * 10);  // e.g., 2.0 → 0x14
 
-  // Calculate CRC16 for the relevant part of the command
-  uint16_t crc = CRC16(command + 5, 16);
-  command[21] = (uint8_t)(crc & 0xFF);         // CRC LOW byte
-  command[22] = (uint8_t)((crc >> 8) & 0xFF);  // CRC high byte
-
-  // Send the full command via Serial1
-  Serial1.write(command, sizeof(command));
-
-  // Format final command string
-  String commandString = "Final Zoom Command: ";
-  for (int i = 0; i < 23; i++) {
-    commandString += String(command[i], HEX) + " ";
+  // Padding
+  for (int i = 11; i <= 20; i++) {
+    command[i] = 0x00;
   }
 
-  // Log the command
-  logEvent("Zoom changed to " + String(zoom) + "x");
-  debugLogEvent(commandString);
+  // Calculate and insert CRC
+  uint16_t crc = CRC(command + 5, 16);  // CRC over bytes 5–20
+  command[21] = crc & 0xFF;                     // LOW byte
+  command[22] = (crc >> 8) & 0xFF;              // HIGH byte
+
+  // Send command
+  Serial1.write(command, 23);
+
+  // Debug output
+  String debug = "Zoom: " + String(zoom, 1) + "x → Final Command: ";
+  for (int i = 0; i < 23; i++) {
+    if (command[i] < 0x10) debug += "0";
+    debug += String(command[i], HEX) + " ";
+  }
+  logEvent(debug);
 }
+
+
 
 
 
@@ -447,36 +460,36 @@ bool isButtonPressed(Button& btn) {
 
 void button_controlls() {
 
-  if (isButtonPressed(buttons[0])) {  // RIGHT button
+  if (isButtonPressed(buttons[3])) {  // RIGHT button
     int nextMode = (currentMode + 1) % modeCount;
     currentMode = nextMode;
     logEvent("Mode changed to: " + String(modes[currentMode].name));
     sendCommand(modes[currentMode].command);
   }
 
-  if (isButtonPressed(buttons[1])) {  // LEFT button
+  if (isButtonPressed(buttons[2])) {  // LEFT button
     int nextMode = (currentMode - 1 + modeCount) % modeCount;
     currentMode = nextMode;
     logEvent("Mode changed to: " + String(modes[currentMode].name));
     sendCommand(modes[nextMode].command);
   }
 
-  if (isButtonPressed(buttons[2])) {  // UP button
+  if (isButtonPressed(buttons[1])) {  // UP button
     if (currentZoom < 8.0) {          // Ensures max zoom is 8.0x
       currentZoom += 0.5;
       currentZoom = min(currentZoom, 8.0f);  // Ensure it never exceeds 8.0
-      sendCustomZoomCommand(currentZoom);
+      sendCustomZoomCommand((int)currentZoom);
       logEvent("Zoom increased to: " + String(currentZoom) + "x");
     } else {
       logEvent("Zoom already at max: " + String(currentZoom) + "x");
     }
   }
 
-  if (isButtonPressed(buttons[3])) {  // DOWN button
+  if (isButtonPressed(buttons[0])) {  // DOWN button
     if (currentZoom > 0.5) {          // Ensures min zoom is 0.5x
       currentZoom -= 0.5;
       currentZoom = max(currentZoom, 1.0f);  // Ensure it never drops below 1
-      sendCustomZoomCommand(currentZoom);
+      sendCustomZoomCommand((int)currentZoom);
       logEvent("Zoom decreased to: " + String(currentZoom) + "x");
     }
   }
@@ -504,7 +517,7 @@ void wifi_mode() {
   webserver_setup();
   OTA_setup();
 
-  while (millis() - startTime < 240000) {  // Stay awake for 4 minute
+  while (millis() - startTime < 480000) {  // Stay awake for 8 minute
     server.handleClient();
     ArduinoOTA.handle();
     button_controlls();
@@ -557,9 +570,10 @@ void setup() {
   setup_buttons();
   init_buttons();
   serial_setup();
+  delay(300);
   loadSettings();
   sleep_setup();
-  logEvent("Applying saved mode + zoom...");
+
 
 esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
 
